@@ -2,33 +2,39 @@ on:
   workflow_dispatch:
     inputs:
       publish:
-        description: 'If true, run publish after build (default: false)'
+        description: 'run publish after build (default: false)'
         required: false
-        default: 'false'
+        default: false
+        type: boolean
       run_tests:
-        description: 'If true, run gradle runtestsAndVerifyResults before builds (default: false)'
+        description: 'run tests before builds (default: false)'
         required: false
-        default: 'false'
+        default: false
+        type: boolean
       custom_version:
         description: 'Optional custom NPM version (overrides computed version).'
         required: false
         default: ''
       enable_HERMES:
-        description: 'Enable HERMES in the matrix'
+        description: 'build HERMES'
         required: false
-        default: 'true'
+        default: true
+        type: boolean
       enable_V8:
-        description: 'Enable V8 in the matrix'
+        description: 'build V8'
         required: false
-        default: 'true'
+        default: true
+        type: boolean
       enable_QUICKS:
-        description: 'Enable QUICKS in the matrix'
+        description: 'build QUICKS'
         required: false
-        default: 'true'
+        default: true
+        type: boolean
       enable_JSC:
-        description: 'Enable JSC in the matrix'
+        description: 'build JSC'
         required: false
-        default: 'true'
+        default: true
+        type: boolean
 
 jobs:
   set-matrix:
@@ -80,14 +86,6 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-          persist-credentials: true
-
-      - name: Setup Node.js 18
-        uses: actions/setup-node@v4
-        with:
-          node-version: 18
 
       - name: set up JDK 17
         uses: actions/setup-java@v4
@@ -142,6 +140,7 @@ jobs:
           ENGINE: ${{ matrix.engine }}
 
       - name: Publish tarball (or add dist-tag if version already exists)
+        if: ${{ github.event.inputs.publish == 'true' }}
         id: npm_publish
         run: |
           set -e
@@ -166,7 +165,7 @@ jobs:
           TARBALL: ${{ env.TARBALL }}
 
       - name: Create and push git tag for engine/version
-        if: always()
+        if: ${{ github.event.inputs.publish == 'true' }}
         id: tag_release
         run: |
           set -e
@@ -183,6 +182,7 @@ jobs:
           echo "TAG_NAME=$TAG_NAME" >> $GITHUB_ENV
 
       - name: Update CHANGELOG
+        if: ${{ github.event.inputs.publish == 'true' }}
         id: changelog
         uses: requarks/changelog-action@v1
         with:
@@ -194,7 +194,7 @@ jobs:
 
       - name: Create GitHub release for engine
         uses: actions/create-release@v1
-        if: always()
+        if: ${{ github.event.inputs.publish == 'true' }}
         with:
           tag_name: ${{ env.TAG_NAME }}
           release_name: ${{ env.ENGINE }} ${{ env.NPM_VERSION }}
