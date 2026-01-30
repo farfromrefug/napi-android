@@ -29,6 +29,6 @@ jobs:
         with:
           name: release
           path: |
-            ./dist_quickjs
+            ./dist_quickjs_ng
 
     
