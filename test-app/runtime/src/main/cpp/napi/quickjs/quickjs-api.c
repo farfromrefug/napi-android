@@ -3,8 +3,11 @@
 #include <limits.h>
 #include <quickjs.h>
 #include "js_native_api.h"
-#include "libbf.h"
 #include "quicks-runtime.h"
+
+#ifndef __QJS_NG__
+#include "cutils.h"
+#endif
 
 #ifdef __ANDROID__
 
@@ -36,6 +39,8 @@
 
 #ifdef USE_MIMALLOC
 
+
+#ifdef __QJS_NG__
 static void *js_mi_calloc(void *opaque, size_t count, size_t size) {
     return mi_calloc(count, size);
 }
@@ -61,6 +66,85 @@ static const JSMallocFunctions mi_mf = {
         js_mi_realloc,
         mi_malloc_usable_size
 };
+#endif
+
+#ifndef __QJS_NG__
+
+#if defined(__APPLE__)
+#define MALLOC_OVERHEAD  0
+#else
+#define MALLOC_OVERHEAD  8
+#endif
+
+static void *js_def_malloc(JSMallocState *s, size_t size)
+{
+    void *ptr;
+
+    /* Do not allocate zero bytes: behavior is platform dependent */
+    assert(size != 0);
+
+    if (unlikely(s->malloc_size + size > s->malloc_limit))
+        return NULL;
+
+    ptr = mi_malloc(size);
+    if (!ptr)
+        return NULL;
+
+    s->malloc_count++;
+    s->malloc_size += mi_malloc_usable_size(ptr) + MALLOC_OVERHEAD;
+    return ptr;
+}
+
+static void js_def_free(JSMallocState *s, void *ptr)
+{
+    if (!ptr)
+        return;
+
+    s->malloc_count--;
+    s->malloc_size -= mi_malloc_usable_size(ptr) + MALLOC_OVERHEAD;
+    mi_free(ptr);
+}
+
+static void *js_def_realloc(JSMallocState *s, void *ptr, size_t size)
+{
+    size_t old_size;
+
+    if (!ptr) {
+        if (size == 0)
+            return NULL;
+        return js_def_malloc(s, size);
+    }
+    old_size = mi_malloc_usable_size(ptr);
+    if (size == 0) {
+        s->malloc_count--;
+        s->malloc_size -= old_size + MALLOC_OVERHEAD;
+        mi_free(ptr);
+        return NULL;
+    }
+    if (s->malloc_size + size - old_size > s->malloc_limit)
+        return NULL;
+
+    ptr = mi_realloc(ptr, size);
+    if (!ptr)
+        return NULL;
+
+    s->malloc_size += mi_malloc_usable_size(ptr) - old_size;
+    return ptr;
+}
+
+static const JSMallocFunctions mi_mf = {
+    js_def_malloc,
+    js_def_free,
+    js_def_realloc,
+    mi_malloc_usable_size,
+};
+
+#endif
+
+
+
+
+
 
 #endif
 
@@ -1043,48 +1127,48 @@ bool JS_GetBigIntWords(JSContext *context, JSValue value, int *signBit, size_t *
     return rev;
 }
 
-typedef struct JS_BigFloatExt {
-    JSRefCountHeader header;
-    bf_t num;
-} JS_BigFloatExt;
-
-bool JS_ToInt64WithBigInt(JSContext *context, JSValueConst value, int64_t *pres, bool *lossless) {
-    if (pres == NULL || lossless == NULL) {
-        return 0;
-    }
-
-    bool rev = false;
-    JSValue val = JS_DupValue(context, value);
-    JS_BigFloatExt *p = (JS_BigFloatExt *) JS_VALUE_GET_PTR(val);
-    if (p) {
-        int opFlag = bf_get_int64(pres, &p->num, 0);
-        if (lossless != NULL) {
-            *lossless = (opFlag == 0);
-        }
-        rev = true;
-    }
-    JS_FreeValue(context, val);
-    return rev;
-}
-
-bool JS_ToUInt64WithBigInt(JSContext *context, JSValueConst value, uint64_t *pres, bool *lossless) {
-    if (pres == NULL || lossless == NULL) {
-        return false;
-    }
-
-    bool rev = false;
-    JSValue val = JS_DupValue(context, value);
-    JS_BigFloatExt *p = (JS_BigFloatExt *) JS_VALUE_GET_PTR(val);
-    if (p) {
-        int opFlag = bf_get_uint64(pres, &p->num);
-        if (lossless != NULL) {
-            *lossless = (opFlag == 0);
-        }
-        rev = true;
-    }
-    JS_FreeValue(context, val);
-    return rev;
-}
+//typedef struct JS_BigFloatExt {
+//    JSRefCountHeader header;
+//    bf_t num;
+//} JS_BigFloatExt;
+//
+//bool JS_ToInt64WithBigInt(JSContext *context, JSValueConst value, int64_t *pres, bool *lossless) {
+//    if (pres == NULL || lossless == NULL) {
+//        return 0;
+//    }
+//
+//    bool rev = false;
+//    JSValue val = JS_DupValue(context, value);
+//    JS_BigFloatExt *p = (JS_BigFloatExt *) JS_VALUE_GET_PTR(val);
+//    if (p) {
+//        int opFlag = bf_get_int64(pres, &p->num, 0);
+//        if (lossless != NULL) {
+//            *lossless = (opFlag == 0);
+//        }
+//        rev = true;
+//    }
+//    JS_FreeValue(context, val);
+//    return rev;
+//}
+//
+//bool JS_ToUInt64WithBigInt(JSContext *context, JSValueConst value, uint64_t *pres, bool *lossless) {
+//    if (pres == NULL || lossless == NULL) {
+//        return false;
+//    }
+//
+//    bool rev = false;
+//    JSValue val = JS_DupValue(context, value);
+//    JS_BigFloatExt *p = (JS_BigFloatExt *) JS_VALUE_GET_PTR(val);
+//    if (p) {
+//        int opFlag = bf_get_uint64(pres, &p->num);
+//        if (lossless != NULL) {
+//            *lossless = (opFlag == 0);
+//        }
+//        rev = true;
+//    }
+//    JS_FreeValue(context, val);
+//    return rev;
+//}
 
 napi_status napi_create_bigint_int64(napi_env env, int64_t value, napi_value *result) {
     CHECK_ARG(env)
@@ -1508,7 +1592,11 @@ napi_status napi_get_array_length(napi_env env,
 
     JSValue jsValue = *((JSValue *) value);
 
-    if (!JS_IsArray(env->context, jsValue))
+#ifdef __QJS_NG__
+    if (!JS_IsArray(jsValue))
+#else
+    if (!JS_IsArray(env->context,jsValue))
+#endif
         return napi_set_last_error(env, napi_array_expected, NULL, 0, NULL);
 
     int64_t length = 0;
@@ -1706,18 +1794,6 @@ napi_status napi_get_typedarray_info(napi_env env,
     return napi_clear_last_error(env);
 }
 
-bool JS_IsDataView(JSContext *context, JSValue value) {
-    bool result = false;
-    JSValue constructor = JS_GetPropertyStr(context, value, "constructor");
-    JSValue name = JS_GetPropertyStr(context, constructor, "name");
-    const char *cName = JS_ToCString(context, name);
-    result = !strcmp("DataView", cName ? cName : "");
-    JS_FreeCString(context, cName);
-    JS_FreeValue(context, name);
-    JS_FreeValue(context, constructor);
-    return result;
-}
-
 napi_status napi_get_dataview_info(napi_env env,
                                    napi_value dataview,
                                    size_t *byte_length,
@@ -1729,7 +1805,7 @@ napi_status napi_get_dataview_info(napi_env env,
 
     JSValue value = *((JSValue *) dataview);
 
-    if (!JS_IsDataView(env->context, value)) {
+    if (!JS_IsDataView(value)) {
         return napi_set_last_error(env, napi_invalid_arg, NULL, 0, NULL);
     }
 
@@ -1835,11 +1911,15 @@ napi_status napi_get_value_bigint_int64(napi_env env,
     CHECK_ARG(value)
     CHECK_ARG(result)
 
-    if (!JS_IsBigInt(env->context, *(JSValue *) value)) {
+    if (!JS_IsBigInt(
+#ifndef __QJS_NG__
+        env->context,
+#endif
+            *(JSValue *) value)) {
         return napi_set_last_error(env, napi_bigint_expected, NULL, 0, NULL);
     }
 
-    JS_ToInt64WithBigInt(env->context, *(JSValue *) value, result, lossless);
+    JS_ToBigInt64(env->context, result,*(JSValue *) value);
 
     return napi_clear_last_error(env);
 }
@@ -1852,11 +1932,15 @@ napi_status napi_get_value_bigint_uint64(napi_env env,
     CHECK_ARG(value)
     CHECK_ARG(result)
 
-    if (!JS_IsBigInt(env->context, *(JSValue *) value)) {
+    if (!JS_IsBigInt(
+#ifndef __QJS_NG__
+    env->context,
+#endif
+        *(JSValue *) value)) {
         return napi_set_last_error(env, napi_bigint_expected, NULL, 0, NULL);
     }
 
-    JS_ToUInt64WithBigInt(env->context, *(JSValue *) value, result, lossless);
+    JS_ToBigUint64(env->context, result, *(JSValue *) value);
 
     return napi_clear_last_error(env);
 }
@@ -1874,7 +1958,11 @@ napi_status napi_get_value_bigint_words(napi_env env,
 
     JSValue jsValue = *(JSValue *) value;
 
-    if (!JS_IsBigInt(env->context, jsValue)) {
+    if (!JS_IsBigInt(
+#ifndef __QJS_NG__
+            env->context,
+#endif
+        jsValue)) {
         return napi_set_last_error(env, napi_bigint_expected, NULL, 0, NULL);
     }
 
@@ -2271,7 +2359,11 @@ napi_status napi_typeof(napi_env env, napi_value value, napi_valuetype *result) 
         *result = napi_string;
     } else if (JS_IsSymbol(jsValue)) {
         *result = napi_symbol;
-    } else if (JS_IsBigInt(env->context, jsValue)) {
+    } else if (JS_IsBigInt(
+#ifndef __QJS_NG__
+            env->context,
+#endif
+        jsValue)) {
         *result = napi_bigint;
     } else if (JS_IsFunction(env->context, jsValue)) {
         *result = napi_function;
@@ -2319,7 +2411,11 @@ napi_status napi_is_array(napi_env env, napi_value value, bool *result) {
     CHECK_ARG(result)
 
     JSValue jsValue = *((JSValue *) value);
-    int status = JS_IsArray(env->context, jsValue);
+    int status = JS_IsArray(
+#ifndef __QJS_NG__
+            env->context,
+#endif,
+        jsValue);
     RETURN_STATUS_IF_FALSE(status != -1, napi_pending_exception);
     *result = status;
 
@@ -2388,7 +2484,11 @@ napi_status napi_is_error(napi_env env, napi_value value, bool *result) {
     CHECK_ARG(value)
     CHECK_ARG(result)
 
-    int status = JS_IsError(env->context, *((JSValue *) value));
+    int status = JS_IsError(
+#ifndef __QJS_NG__
+            env->context,
+#endif
+        *((JSValue *) value));
     *result = status;
     return napi_clear_last_error(env);
 }
@@ -2411,7 +2511,7 @@ napi_status napi_is_dataview(napi_env env, napi_value value, bool *result) {
     CHECK_ARG(value)
     CHECK_ARG(result)
 
-    int status = JS_IsDataView(env->context, *((JSValue *) value));
+    int status = JS_IsDataView(*((JSValue *) value));
     *result = status;
 
     return napi_clear_last_error(env);
@@ -3970,8 +4070,10 @@ napi_status qjs_create_runtime(napi_runtime *runtime) {
     (*runtime)->runtime = JS_NewRuntime();
 #endif
 
-#ifndef NDEBUG
+#ifdef __QJS_NG__
+    #ifndef NDEBUG
     JS_SetDumpFlags((*runtime)->runtime, JS_DUMP_LEAKS);
+    #endif
 #endif
 
     JS_SetMaxStackSize((*runtime)->runtime, 0);
@@ -3986,12 +4088,17 @@ napi_status qjs_create_runtime(napi_runtime *runtime) {
     JSClassDef ConstructorClassDef = {"ConstructorInfo", function_finalizer, NULL, NULL, NULL};
     JSClassDef NapiHostObjectClassDef = {"NapiHostObject", host_object_finalizer, NULL, NULL,
                                          &NapiHostObjectExoticMethods};
-
-
+#ifndef __QJS_NG__
+    JS_NewClassID( &(*runtime)->napiHostObjectClassId);
+    JS_NewClassID( &(*runtime)->constructorClassId);
+    JS_NewClassID(&(*runtime)->functionClassId);
+    JS_NewClassID(&(*runtime)->externalClassId);
+#else
     JS_NewClassID((*runtime)->runtime, &(*runtime)->napiHostObjectClassId);
     JS_NewClassID((*runtime)->runtime, &(*runtime)->constructorClassId);
     JS_NewClassID((*runtime)->runtime, &(*runtime)->functionClassId);
     JS_NewClassID((*runtime)->runtime, &(*runtime)->externalClassId);
+#endif
 
     JS_NewClass((*runtime)->runtime, (*runtime)->napiHostObjectClassId, &NapiHostObjectClassDef);
     JS_NewClass((*runtime)->runtime, (*runtime)->externalClassId, &ExternalClassDef);
@@ -3999,23 +4106,6 @@ napi_status qjs_create_runtime(napi_runtime *runtime) {
     JS_NewClass((*runtime)->runtime, (*runtime)->constructorClassId, &ConstructorClassDef);
 
     return napi_ok;
-}
-
-static void JS_AfterGCCallback(JSRuntime *rt) {
-    napi_env env = (napi_env) JS_GetRuntimeOpaque(rt);
-    if (env->gcAfter != NULL) {
-        env->gcAfter->finalizeCallback(env, env->gcAfter->data, env->gcAfter->finalizeHint);
-    }
-}
-
-static int JS_BeforeGCCallback(JSRuntime *rt) {
-    napi_env env = (napi_env) JS_GetRuntimeOpaque(rt);
-    bool hint = true;
-    if (env->gcAfter != NULL) {
-        env->gcAfter->finalizeCallback(env, env->gcAfter->data, &hint);
-    }
-
-    return hint;
 }
 
 static JSValue JSRunGCCallback(JSContext *ctx, JSValue
@@ -4047,6 +4137,28 @@ JSEngineCallback(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *
     return JS_UNDEFINED;
 }
 
+#ifndef __QJS_NG__
+void JSR_PromiseRejectionTracker(JSContext *ctx, JSValueConst promise,
+                                   JSValueConst reason,
+                                   JS_BOOL is_handled, void *opaque)
+#else
+void JSR_PromiseRejectionTracker(JSContext *ctx, JSValue promise,
+                                   JSValue reason,
+                                   bool is_handled, void *opaque)
+#endif
+ {
+    JSValue global = JS_GetGlobalObject(ctx);
+    JSValue onUnhandledRejection = JS_GetPropertyStr(ctx, global, "onUnhandledPromiseRejectionTracker");
+    if (JS_IsFunction(ctx, onUnhandledRejection)) {
+        JSValue isHandled = JS_NewBool(ctx, is_handled);
+        JSValue argv[3] = {promise, reason, isHandled};
+        JS_Call(ctx, onUnhandledRejection, global, 3, argv);
+        JS_FreeValue(ctx, isHandled);
+    }
+    JS_FreeValue(ctx, onUnhandledRejection);
+    JS_FreeValue(ctx, global);
+}
+
 napi_status qjs_create_napi_env(napi_env *env, napi_runtime runtime) {
     assert(env && runtime);
 
@@ -4063,10 +4175,6 @@ napi_status qjs_create_napi_env(napi_env *env, napi_runtime runtime) {
     (*env)->js_enter_state = 0;
 
     JS_SetRuntimeOpaque(runtime->runtime, *env);
-
-    JS_SetGCAfterCallback(runtime->runtime, JS_AfterGCCallback);
-
-    JS_SetGCBeforeCallback(runtime->runtime, JS_BeforeGCCallback);
 
     // Create runtime atoms
     (*env)->atoms.napi_external = JS_NewAtom(context, "napi_external");
@@ -4105,6 +4213,8 @@ napi_status qjs_create_napi_env(napi_env *env, napi_runtime runtime) {
 
     JSValue EngineCallback = JS_NewCFunction(context, JSEngineCallback, NULL, 0);
     JS_SetPropertyStr(context, globalValue, "directFunction", EngineCallback);
+
+    JS_SetHostPromiseRejectionTracker(runtime->runtime, JSR_PromiseRejectionTracker, *env);
 
     (*env)->instanceData = NULL;
     (*env)->isThrowNull = false;
